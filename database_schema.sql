@@ -11,6 +11,7 @@ CREATE TYPE consultation_status_enum AS ENUM ('scheduled', 'in_progress', 'compl
 CREATE TYPE consultation_type_enum AS ENUM ('call', 'video', 'chat', 'email');
 CREATE TYPE payment_status_enum AS ENUM ('pending', 'completed', 'failed', 'refunded');
 CREATE TYPE gender_enum AS ENUM ('male', 'female', 'other', 'prefer_not_to_say');
+CREATE TYPE kyc_status_enum AS ENUM ('not_started', 'in_progress', 'completed', 'failed', 'rejected');
 
 -- Users table (synced with AWS Cognito)
 CREATE TABLE users (
@@ -61,12 +62,24 @@ CREATE TABLE astrologer_profiles (
     verified_at TIMESTAMP WITH TIME ZONE,
     verified_by UUID REFERENCES users(id),
     
+    -- KYC Integration with Digio
+    kyc_status kyc_status_enum DEFAULT 'not_started',
+    kyc_request_id VARCHAR(255), -- Digio KYC request ID
+    kyc_reference_id VARCHAR(255), -- Internal reference ID for KYC
+    kyc_initiated_at TIMESTAMP WITH TIME ZONE,
+    kyc_completed_at TIMESTAMP WITH TIME ZONE,
+    kyc_digio_response JSONB, -- Store Digio's complete KYC response
+    kyc_documents JSONB, -- Store document references from KYC
+    kyc_rejection_reason TEXT, -- Reason for KYC rejection if any
+    kyc_retry_count INTEGER DEFAULT 0, -- Number of KYC retry attempts
+    
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     
     CONSTRAINT astrologer_profiles_rate_check CHECK (consultation_rate_per_minute >= 0),
     CONSTRAINT astrologer_profiles_experience_check CHECK (experience_years >= 0),
-    CONSTRAINT astrologer_profiles_rating_check CHECK (average_rating >= 0 AND average_rating <= 5)
+    CONSTRAINT astrologer_profiles_rating_check CHECK (average_rating >= 0 AND average_rating <= 5),
+    CONSTRAINT astrologer_profiles_kyc_retry_check CHECK (kyc_retry_count >= 0)
 );
 
 -- Astrologer availability schedule
@@ -247,6 +260,23 @@ CREATE TABLE promo_code_usage (
     UNIQUE(promo_code_id, user_id, consultation_id)
 );
 
+-- KYC audit logs for tracking KYC process events
+CREATE TABLE kyc_audit_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    astrologer_profile_id UUID NOT NULL REFERENCES astrologer_profiles(id) ON DELETE CASCADE,
+    kyc_request_id VARCHAR(255), -- Digio KYC request ID
+    event_type VARCHAR(50) NOT NULL, -- initiated, completed, failed, webhook_received, etc.
+    event_status VARCHAR(50), -- success, failure, pending
+    digio_webhook_data JSONB, -- Raw webhook data from Digio
+    api_request_data JSONB, -- Request data sent to Digio
+    api_response_data JSONB, -- Response data from Digio
+    error_message TEXT, -- Error details if any
+    user_agent TEXT, -- User agent for web-based KYC
+    ip_address INET, -- IP address for security tracking
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes for better performance
 CREATE INDEX idx_users_cognito_user_id ON users(cognito_user_id);
 CREATE INDEX idx_users_phone_number ON users(phone_number);
@@ -257,6 +287,8 @@ CREATE INDEX idx_astrologer_profiles_user_id ON astrologer_profiles(user_id);
 CREATE INDEX idx_astrologer_profiles_verification_status ON astrologer_profiles(verification_status);
 CREATE INDEX idx_astrologer_profiles_availability_status ON astrologer_profiles(availability_status);
 CREATE INDEX idx_astrologer_profiles_average_rating ON astrologer_profiles(average_rating);
+CREATE INDEX idx_astrologer_profiles_kyc_status ON astrologer_profiles(kyc_status);
+CREATE INDEX idx_astrologer_profiles_kyc_request_id ON astrologer_profiles(kyc_request_id);
 
 CREATE INDEX idx_consultations_user_id ON consultations(user_id);
 CREATE INDEX idx_consultations_astrologer_id ON consultations(astrologer_id);
@@ -277,6 +309,11 @@ CREATE INDEX idx_chat_messages_sender_id ON chat_messages(sender_id);
 
 CREATE INDEX idx_wallet_transactions_wallet_id ON wallet_transactions(wallet_id);
 CREATE INDEX idx_wallet_transactions_created_at ON wallet_transactions(created_at);
+
+CREATE INDEX idx_kyc_audit_logs_astrologer_profile_id ON kyc_audit_logs(astrologer_profile_id);
+CREATE INDEX idx_kyc_audit_logs_kyc_request_id ON kyc_audit_logs(kyc_request_id);
+CREATE INDEX idx_kyc_audit_logs_event_type ON kyc_audit_logs(event_type);
+CREATE INDEX idx_kyc_audit_logs_created_at ON kyc_audit_logs(created_at);
 
 -- Create functions for updating timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()

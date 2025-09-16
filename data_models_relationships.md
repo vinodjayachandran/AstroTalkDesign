@@ -45,6 +45,15 @@ erDiagram
         enum verification_status
         timestamp verified_at
         uuid verified_by FK
+        enum kyc_status
+        varchar kyc_request_id
+        varchar kyc_reference_id
+        timestamp kyc_initiated_at
+        timestamp kyc_completed_at
+        jsonb kyc_digio_response
+        jsonb kyc_documents
+        text kyc_rejection_reason
+        integer kyc_retry_count
         timestamp created_at
         timestamp updated_at
     }
@@ -181,6 +190,21 @@ erDiagram
         timestamp created_at
     }
 
+    KYC_AUDIT_LOGS {
+        uuid id PK
+        uuid astrologer_profile_id FK
+        varchar kyc_request_id
+        varchar event_type
+        varchar event_status
+        jsonb digio_webhook_data
+        jsonb api_request_data
+        jsonb api_response_data
+        text error_message
+        text user_agent
+        inet ip_address
+        timestamp created_at
+    }
+
     %% Relationships
     USERS ||--o| ASTROLOGER_PROFILES : "has"
     USERS ||--|| USER_WALLETS : "owns"
@@ -192,6 +216,7 @@ erDiagram
     ASTROLOGER_PROFILES ||--o{ ASTROLOGER_AVAILABILITY : "has"
     ASTROLOGER_PROFILES ||--o{ CONSULTATIONS : "provides"
     ASTROLOGER_PROFILES ||--o{ REVIEWS : "receives"
+    ASTROLOGER_PROFILES ||--o{ KYC_AUDIT_LOGS : "tracks"
 
     CONSULTATIONS ||--|| PAYMENTS : "has"
     CONSULTATIONS ||--o| REVIEWS : "can_have"
@@ -259,8 +284,37 @@ interface AstrologerProfile {
   verification_status: 'pending' | 'approved' | 'rejected';
   verified_at?: Date;
   verified_by?: string;                 // Admin user ID
+  
+  // KYC Integration with Digio
+  kyc_status: 'not_started' | 'in_progress' | 'completed' | 'failed' | 'rejected';
+  kyc_request_id?: string;              // Digio KYC request ID
+  kyc_reference_id?: string;            // Internal reference ID for KYC
+  kyc_initiated_at?: Date;              // When KYC was initiated
+  kyc_completed_at?: Date;              // When KYC was completed
+  kyc_digio_response?: object;          // Complete KYC response from Digio
+  kyc_documents?: {                     // Document references from KYC
+    pan_card?: KYCDocument;
+    aadhaar_card?: KYCDocument;
+    video_verification?: VideoKYCResult;
+  };
+  kyc_rejection_reason?: string;        // Reason for KYC rejection if any
+  kyc_retry_count: number;              // Number of KYC retry attempts
+  
   created_at: Date;
   updated_at: Date;
+}
+
+interface KYCDocument {
+  status: 'verified' | 'failed' | 'pending';
+  document_number?: string;
+  name_on_document?: string;
+  verified_at?: Date;
+}
+
+interface VideoKYCResult {
+  status: 'completed' | 'failed' | 'pending';
+  liveness_check?: 'passed' | 'failed';
+  verified_at?: Date;
 }
 ```
 
@@ -382,7 +436,27 @@ interface WalletTransaction {
 }
 ```
 
-### 5. Promotional Models
+### 5. KYC Models
+
+#### KYCAuditLog Model
+```typescript
+interface KYCAuditLog {
+  id: string;                           // UUID
+  astrologer_profile_id: string;        // Related astrologer profile
+  kyc_request_id?: string;              // Digio KYC request ID
+  event_type: string;                   // initiated, completed, failed, webhook_received, etc.
+  event_status: 'success' | 'failure' | 'pending';
+  digio_webhook_data?: object;          // Raw webhook data from Digio
+  api_request_data?: object;            // Request data sent to Digio
+  api_response_data?: object;           // Response data from Digio
+  error_message?: string;               // Error details if any
+  user_agent?: string;                  // User agent for web-based KYC
+  ip_address?: string;                  // IP address for security tracking
+  created_at: Date;
+}
+```
+
+### 6. Promotional Models
 
 #### PromoCode Model
 ```typescript
@@ -414,9 +488,10 @@ interface PromoCode {
 3. OTP sent via SMS
 4. Upon OTP verification:
    - User record created in PostgreSQL
-   - If astrologer: AstrologerProfile created
+   - If astrologer: AstrologerProfile created with kyc_status = 'not_started'
    - UserWallet created for all users
    - Profile status set based on user type
+   - For astrologers: KYC verification required before going live
 
 ### 2. Consultation Booking Flow
 1. User selects astrologer and time slot
@@ -444,20 +519,42 @@ interface PromoCode {
 4. Verified reviews weighted higher in calculations
 
 ### 5. Astrologer Verification Process
-1. Astrologer submits documents during registration
-2. Admin reviews verification documents
-3. Profile status updated to approved/rejected
-4. Approved astrologers can accept consultations
+1. Astrologer completes registration with basic documents
+2. **KYC Process (Required):**
+   - Astrologer initiates KYC via Digio integration
+   - Video verification with PAN and Aadhaar cards
+   - Real-time identity verification
+   - KYC status updated based on Digio response
+3. **Auto-Approval on Successful KYC:**
+   - Profile status automatically updated to 'approved' on successful KYC
+   - Astrologer can immediately start accepting consultations
+4. **Optional Admin Review:**
+   - Post-approval quality checks for profile content
+   - Can suspend profiles that violate content guidelines
+   - Focus on service quality rather than identity verification
+
+### 6. KYC Workflow
+1. **Initiation**: Astrologer clicks "Complete KYC Verification"
+2. **Digio Integration**: System creates KYC request with Digio
+3. **User Journey**: Redirect to Digio gateway for video verification
+4. **Document Verification**: PAN card, Aadhaar card validation
+5. **Webhook Processing**: Real-time status updates via Digio webhooks
+6. **Completion**: KYC status updated, notifications sent
+7. **Retry Logic**: Up to 3 retry attempts for failed KYC
+8. **Audit Trail**: All KYC events logged for compliance
 
 ## Data Constraints & Validations
 
 ### 1. Business Rules
 - Phone numbers must be unique across all users
 - Astrologers cannot book consultations with themselves
+- **Astrologers must complete KYC verification before accepting consultations**
 - Reviews can only be submitted once per consultation
 - Wallet balance cannot go negative
 - Consultation duration must be positive
 - Ratings must be between 1-5
+- **Maximum 3 KYC retry attempts per astrologer**
+- **KYC verification expires after 7 days if not completed**
 
 ### 2. Database Constraints
 - Foreign key constraints ensure referential integrity
@@ -483,12 +580,18 @@ interface PromoCode {
 - `users.phone_number` - Login and duplicate check
 - `consultations.scheduled_at` - Booking queries
 - `astrologer_profiles.average_rating` - Search ranking
+- `astrologer_profiles.kyc_status` - KYC status filtering
+- `astrologer_profiles.kyc_request_id` - KYC request lookup
+- `kyc_audit_logs.astrologer_profile_id` - KYC audit queries
+- `kyc_audit_logs.event_type` - KYC event filtering
 - `wallet_transactions.created_at` - Transaction history
 
 ### 3. Composite Indexes
 - `(astrologer_id, scheduled_at)` - Availability queries
 - `(user_id, status, created_at)` - User consultation history
 - `(astrologer_id, status, created_at)` - Astrologer bookings
+- `(kyc_status, verification_status)` - Astrologer filtering by KYC and verification status
+- `(kyc_request_id, event_type, created_at)` - KYC audit trail queries
 
 ## Scalability Considerations
 

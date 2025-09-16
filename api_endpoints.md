@@ -314,6 +314,8 @@ GET /astrologers/{astrologer_id}
     "total_ratings": 890,
     "profile_picture_url": "https://s3.amazonaws.com/...",
     "verification_status": "approved",
+    "kyc_status": "completed",
+    "kyc_verified": true,
     "created_at": "2025-01-15T10:00:00Z"
   }
 }
@@ -387,9 +389,260 @@ PUT /astrologers/profile
 }
 ```
 
-## 4. Consultation Booking Endpoints
+## 4. KYC Verification Endpoints (Astrologers Only)
 
-### 4.1 Check Astrologer Availability
+### 4.1 Initiate KYC Process
+```http
+POST /astrologers/kyc/initiate
+```
+
+**Headers:** `Authorization: Bearer <access_token>`
+
+**Request Body:**
+```json
+{
+  "astrologer_id": "uuid"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "KYC process initiated successfully",
+  "data": {
+    "kyc_request_id": "digio_kyc_req_12345",
+    "kyc_reference_id": "KYC_uuid_1631234567890",
+    "gateway_url": "https://gateway.digio.in/kyc/12345?token=abcd1234",
+    "expires_in": "7 days",
+    "instructions": [
+      "Keep your PAN card and Aadhaar card ready",
+      "Ensure good lighting and stable internet",
+      "Complete the process within 7 days",
+      "Have your phone number accessible for OTP verification"
+    ]
+  }
+}
+```
+
+**Response (400) - Already Completed:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "KYC_ALREADY_COMPLETED",
+    "message": "KYC verification has already been completed for this astrologer"
+  }
+}
+```
+
+**Response (400) - Max Retries Exceeded:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "MAX_RETRIES_EXCEEDED",
+    "message": "Maximum KYC retry attempts (3) exceeded. Please contact support.",
+    "details": {
+      "retry_count": 3,
+      "support_email": "support@astrotalk.com",
+      "support_phone": "+91-8080808080"
+    }
+  }
+}
+```
+
+### 4.2 Get KYC Status
+```http
+GET /astrologers/kyc/status
+```
+
+**Headers:** `Authorization: Bearer <access_token>`
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "kyc_status": "completed",
+    "kyc_request_id": "digio_kyc_req_12345",
+    "kyc_reference_id": "KYC_uuid_1631234567890",
+    "initiated_at": "2025-09-15T10:00:00+05:30",
+    "completed_at": "2025-09-15T10:45:00+05:30",
+    "verification_status": "approved",
+    "retry_count": 0,
+    "documents_verified": {
+      "pan_card": true,
+      "aadhaar_card": true,
+      "video_verification": true
+    },
+    "next_steps": "Your KYC is complete. You can now start accepting consultations."
+  }
+}
+```
+
+**Response (200) - In Progress:**
+```json
+{
+  "success": true,
+  "data": {
+    "kyc_status": "in_progress",
+    "kyc_request_id": "digio_kyc_req_12345",
+    "kyc_reference_id": "KYC_uuid_1631234567890",
+    "initiated_at": "2025-09-15T10:00:00+05:30",
+    "verification_status": "pending",
+    "retry_count": 0,
+    "gateway_url": "https://gateway.digio.in/kyc/12345?token=abcd1234",
+    "expires_at": "2025-09-22T10:00:00+05:30",
+    "next_steps": "Please complete your KYC verification by clicking on the gateway URL."
+  }
+}
+```
+
+**Response (200) - Failed:**
+```json
+{
+  "success": true,
+  "data": {
+    "kyc_status": "failed",
+    "kyc_request_id": "digio_kyc_req_12345",
+    "verification_status": "pending",
+    "retry_count": 1,
+    "rejection_reason": "Document quality was unclear. Please retry with better lighting.",
+    "can_retry": true,
+    "next_steps": "You can retry KYC verification. Please ensure good lighting and clear document photos."
+  }
+}
+```
+
+### 4.3 Retry KYC Process
+```http
+POST /astrologers/kyc/retry
+```
+
+**Headers:** `Authorization: Bearer <access_token>`
+
+**Request Body:**
+```json
+{
+  "astrologer_id": "uuid"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "KYC retry initiated successfully",
+  "data": {
+    "kyc_request_id": "digio_kyc_req_67890",
+    "kyc_reference_id": "KYC_uuid_1631234567891",
+    "gateway_url": "https://gateway.digio.in/kyc/67890?token=xyz9876",
+    "expires_in": "7 days",
+    "retry_count": 2,
+    "previous_failure_reason": "Document quality was unclear",
+    "instructions": [
+      "Ensure documents are clearly visible",
+      "Use good lighting for video verification",
+      "Keep documents flat and within frame"
+    ]
+  }
+}
+```
+
+### 4.4 Get KYC Documents
+```http
+GET /astrologers/kyc/documents
+```
+
+**Headers:** `Authorization: Bearer <access_token>`
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "kyc_status": "completed",
+    "documents": {
+      "pan_card": {
+        "status": "verified",
+        "document_number": "ABCDE1234F",
+        "name_on_document": "John Doe",
+        "verified_at": "2025-09-15T10:30:00+05:30"
+      },
+      "aadhaar_card": {
+        "status": "verified",
+        "document_number": "XXXX-XXXX-1234",
+        "name_on_document": "John Doe",
+        "verified_at": "2025-09-15T10:35:00+05:30"
+      },
+      "video_verification": {
+        "status": "completed",
+        "verified_at": "2025-09-15T10:40:00+05:30",
+        "liveness_check": "passed"
+      }
+    },
+    "verification_summary": {
+      "overall_status": "approved",
+      "verified_name": "John Doe",
+      "verification_score": 98.5,
+      "completed_at": "2025-09-15T10:45:00+05:30"
+    }
+  }
+}
+```
+
+### 4.5 KYC Webhook Endpoint (Internal)
+```http
+POST /webhooks/digio/kyc
+```
+
+**Headers:** 
+- `X-Digio-Signature: <webhook_signature>`
+- `Content-Type: application/json`
+
+**Request Body (from Digio):**
+```json
+{
+  "id": "digio_kyc_req_12345",
+  "reference_id": "KYC_uuid_1631234567890",
+  "status": "completed",
+  "kyc_details": {
+    "overall_status": "approved",
+    "verification_score": 98.5,
+    "documents": {
+      "pan": {
+        "status": "verified",
+        "document_number": "ABCDE1234F",
+        "name": "John Doe"
+      },
+      "aadhaar": {
+        "status": "verified",
+        "document_number": "1234",
+        "name": "John Doe"
+      }
+    },
+    "video_kyc": {
+      "status": "completed",
+      "liveness_check": "passed"
+    }
+  },
+  "completed_at": "2025-09-15T10:45:00Z",
+  "webhook_timestamp": "2025-09-15T10:46:00Z"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Webhook processed successfully"
+}
+```
+
+## 5. Consultation Booking Endpoints
+
+### 5.1 Check Astrologer Availability
 ```http
 GET /astrologers/{astrologer_id}/availability
 ```
@@ -423,7 +676,7 @@ timezone=Asia/Kolkata
 }
 ```
 
-### 4.2 Book Consultation
+### 5.2 Book Consultation
 ```http
 POST /consultations
 ```
@@ -478,7 +731,7 @@ POST /consultations
 }
 ```
 
-### 4.3 Get User Consultations
+### 5.3 Get User Consultations
 ```http
 GET /consultations
 ```
@@ -524,7 +777,7 @@ limit=10
 }
 ```
 
-### 4.4 Get Consultation Details
+### 5.4 Get Consultation Details
 ```http
 GET /consultations/{consultation_id}
 ```
@@ -564,7 +817,7 @@ GET /consultations/{consultation_id}
 }
 ```
 
-### 4.5 Cancel Consultation
+### 5.5 Cancel Consultation
 ```http
 POST /consultations/{consultation_id}/cancel
 ```
@@ -591,9 +844,9 @@ POST /consultations/{consultation_id}/cancel
 }
 ```
 
-## 5. Wallet & Payment Endpoints
+## 6. Wallet & Payment Endpoints
 
-### 5.1 Get Wallet Balance
+### 6.1 Get Wallet Balance
 ```http
 GET /wallet
 ```
@@ -613,7 +866,7 @@ GET /wallet
 }
 ```
 
-### 5.2 Add Money to Wallet
+### 6.2 Add Money to Wallet
 ```http
 POST /wallet/topup
 ```
@@ -645,7 +898,7 @@ POST /wallet/topup
 }
 ```
 
-### 5.3 Get Wallet Transactions
+### 6.3 Get Wallet Transactions
 ```http
 GET /wallet/transactions
 ```
@@ -688,9 +941,9 @@ to_date=2025-09-15
 }
 ```
 
-## 6. Review & Rating Endpoints
+## 7. Review & Rating Endpoints
 
-### 6.1 Submit Review
+### 7.1 Submit Review
 ```http
 POST /consultations/{consultation_id}/review
 ```
@@ -723,7 +976,7 @@ POST /consultations/{consultation_id}/review
 }
 ```
 
-### 6.2 Get Astrologer Reviews
+### 7.2 Get Astrologer Reviews
 ```http
 GET /astrologers/{astrologer_id}/reviews
 ```
@@ -773,7 +1026,7 @@ sort_by=latest|rating
 }
 ```
 
-## 7. Error Response Format
+## 8. Error Response Format
 
 All API endpoints return errors in the following format:
 
@@ -796,22 +1049,41 @@ All API endpoints return errors in the following format:
 }
 ```
 
-## 8. Rate Limiting
+### 8.1 KYC-Specific Error Codes
+```json
+{
+  "KYC_NOT_REQUIRED": "KYC verification is not required for this user type",
+  "KYC_ALREADY_COMPLETED": "KYC verification has already been completed",
+  "KYC_IN_PROGRESS": "KYC verification is currently in progress",
+  "MAX_RETRIES_EXCEEDED": "Maximum KYC retry attempts exceeded",
+  "DIGIO_API_ERROR": "Error communicating with Digio KYC service",
+  "INVALID_WEBHOOK_SIGNATURE": "Invalid webhook signature from Digio",
+  "KYC_REQUIRED": "KYC verification must be completed before accessing this resource"
+}
+```
+
+## 9. Rate Limiting
 
 - **Authentication endpoints**: 5 requests per minute per IP
+- **KYC endpoints**: 3 requests per minute per user (to prevent abuse)
 - **General API endpoints**: 100 requests per minute per user
 - **File upload endpoints**: 10 requests per minute per user
 
-## 9. Webhook Endpoints (for payment gateways)
+## 10. Webhook Endpoints
 
-### 9.1 Razorpay Webhook
+### 10.1 Digio KYC Webhook
+```http
+POST /webhooks/digio/kyc
+```
+
+### 10.2 Razorpay Webhook
 ```http
 POST /webhooks/razorpay
 ```
 
-### 9.2 Stripe Webhook
+### 10.3 Stripe Webhook
 ```http
 POST /webhooks/stripe
 ```
 
-These endpoints handle payment status updates from respective payment gateways.
+These endpoints handle status updates from respective service providers.
